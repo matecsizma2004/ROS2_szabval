@@ -1,0 +1,41 @@
+# Ragasztási feladat konfigurációja (mindkét node ezt olvassa).
+/**:
+  ros__parameters:
+    # --- Ragasztási térkép (mock szenzor) ---------------------------------
+    # 13 sor x 10 oszlop, a feladatlap ábrája alapján.
+    # '1' = fekete cella (ragasztani kell), '0' = üres cella.
+    # A 0. sor van a lap tetején (a robottól legtávolabb).
+    grid:
+      - "1110011100"
+      - "0011100000"
+      - "0000000000"
+      - "0000000011"
+      - "0011100000"
+      - "0000000000"
+      - "0000111111"
+      - "0000000000"
+      - "1110000000"
+      - "0000000000"
+      - "0011100000"
+      - "0000000000"
+      - "0000011111"
+    publish_rate: 1.0          # Hz
+
+    # --- Lap geometriája (world frame, méter) ----------------------------
+    frame_id: "world"
+    cell_size: 0.02            # egy cella 2x2 cm
+    # A rács bal felső sarka (0. sor, 0. oszlop külső sarka).
+    # A sorok -x irányba (a robot felé), az oszlopok -y irányba haladnak.
+    sheet_x: 0.82
+    sheet_y: 0.10
+    sheet_z: 0.0               # a lap felső síkja (padló)
+
+    # --- Mozgás ------------------------------------------------------------
+    glue_height: 0.005         # tool0 magassága a lap felett ragasztás közben
+    lift_height: 0.05          # emelés a nem összefüggő szakaszok között
+    # Kezdő csuklóállás (rad): tool0 lefelé néz, a lap közepe felett ~10 cm-rel.
+    ready_joints: [0.0, -0.3017, 1.3233, 0.0, 0.5492, 0.0]
+    ready_duration: 4.0        # s, a kezdőpózba állás ideje
+    max_step: 0.005            # m, Cartesian interpoláció lépésköze
+    velocity_scaling: 0.2
+    acceleration_scaling: 0.2
