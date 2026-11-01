@@ -1,0 +1,7 @@
+# Claude Code
+CLAUDE.md
+
+# colcon build artifacts
+build/
+install/
+log/
