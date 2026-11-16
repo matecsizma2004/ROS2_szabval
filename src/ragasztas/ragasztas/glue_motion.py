@@ -3,7 +3,8 @@
 Lépések:
   1. megvárja a mock szenzor képét,
   2. soronként megkeresi a fekete szakaszokat (ragasztócsíkokat),
-  3. a robotot kezdőpózba állítja (joint_trajectory_controller),
+  3. a robotot a konfigban megadott Descartes-kezdőpózba állítja: MoveIt /move_action,
+     Pilz PTP tervező (az IK-t és a csuklópályát a MoveIt számolja),
   4. minden csíkra Cartesian pályát kér a MoveIt-tól (/compute_cartesian_path),
      és végrehajtja (/execute_trajectory),
   5. RViz-markerekkel mutatja a lapot, a tervezett és a kész csíkokat.
@@ -11,28 +12,28 @@ Lépések:
 
 import time
 
-from builtin_interfaces.msg import Duration
-from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Point, Pose, Quaternion
-from moveit_msgs.action import ExecuteTrajectory
-from moveit_msgs.msg import MoveItErrorCodes
+from moveit_msgs.action import ExecuteTrajectory, MoveGroup
+from moveit_msgs.msg import (BoundingVolume, Constraints, MoveItErrorCodes,
+                             OrientationConstraint, PositionConstraint)
 from moveit_msgs.srv import GetCartesianPath
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
+from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import ColorRGBA
-from trajectory_msgs.msg import JointTrajectoryPoint
 from visualization_msgs.msg import Marker, MarkerArray
 
-from ragasztas.glue_path import cell_center, find_strokes, image_to_grid
+from ragasztas.glue_path import (cell_center, find_strokes, image_to_grid,
+                                 rpy_deg_to_quaternion)
 
-JOINT_NAMES = [f'joint_{i}' for i in range(1, 7)]
 GROUP = 'manipulator'
 TCP_LINK = 'tool0'
-# tool0 z tengelye függőlegesen lefelé (180°-os forgatás az y tengely körül).
-TOOL_DOWN = Quaternion(x=0.0, y=1.0, z=0.0, w=0.0)
+PTP_PIPELINE = 'pilz_industrial_motion_planner'
+PTP_PLANNER = 'PTP'
 
 
 class GlueMotion(Node):
@@ -47,8 +48,9 @@ class GlueMotion(Node):
         self.sheet_z = p('sheet_z', 0.0).value
         self.glue_z = self.sheet_z + p('glue_height', 0.005).value
         self.lift_z = self.glue_z + p('lift_height', 0.05).value
-        self.ready_joints = list(p('ready_joints', [0.0] * 6).value)
-        self.ready_duration = p('ready_duration', 4.0).value
+        rpy = list(p('tool_rpy_deg', [0.0, 180.0, 0.0]).value)
+        self.tool_orientation = Quaternion(**dict(zip('xyzw', rpy_deg_to_quaternion(*rpy))))
+        self.ready_point = Point(**dict(zip('xyz', p('ready_position', [0.70, 0.0, 0.10]).value)))
         self.max_step = p('max_step', 0.005).value
         self.vel_scaling = p('velocity_scaling', 0.2).value
         self.acc_scaling = p('acceleration_scaling', 0.2).value
@@ -61,9 +63,7 @@ class GlueMotion(Node):
 
         self.cartesian_cli = self.create_client(GetCartesianPath, 'compute_cartesian_path')
         self.execute_cli = ActionClient(self, ExecuteTrajectory, 'execute_trajectory')
-        self.joint_cli = ActionClient(
-            self, FollowJointTrajectory,
-            'joint_trajectory_controller/follow_joint_trajectory')
+        self.move_cli = ActionClient(self, MoveGroup, 'move_action')
 
     # ------------------------------------------------------------------ utils
     def _on_image(self, msg):
@@ -84,27 +84,65 @@ class GlueMotion(Node):
             row, col, self.sheet_x, self.sheet_y, z, self.cell))))
 
     def _pose(self, point):
-        return Pose(position=point, orientation=TOOL_DOWN)
+        return Pose(position=point, orientation=self.tool_orientation)
 
     # ----------------------------------------------------------------- lépések
     def wait_for_interfaces(self):
         self.get_logger().info('Várakozás a /glue_map képre és a MoveIt / controller interfészekre...')
-        while rclpy.ok() and self.image is None:
-            rclpy.spin_once(self, timeout_sec=0.5)
-        self.cartesian_cli.wait_for_service()
-        self.execute_cli.wait_for_server()
-        self.joint_cli.wait_for_server()
+        waits = [
+            ('/glue_map kép (fut a glue_map_sensor?)', lambda: self.image is not None),
+            ('/compute_cartesian_path (move_group)', self.cartesian_cli.service_is_ready),
+            ('/execute_trajectory (move_group)', self.execute_cli.server_is_ready),
+            ('/move_action (move_group)', self.move_cli.server_is_ready),
+        ]
+        start = time.monotonic()
+        last_warn = start
+        while rclpy.ok():
+            missing = [name for name, ready in waits if not ready()]
+            if not missing:
+                return
+            if time.monotonic() - last_warn > 5.0:
+                last_warn = time.monotonic()
+                self.get_logger().warn(
+                    f'{last_warn - start:.0f} s óta várok erre: {", ".join(missing)}')
+            rclpy.spin_once(self, timeout_sec=0.2)
+
+    def move_to_pose(self, pose):
+        """PTP mozgás egy Descartes-pózba: az IK-t és a pályát a MoveIt (Pilz PTP) számolja."""
+        position = PositionConstraint(link_name=TCP_LINK, weight=1.0)
+        position.header.frame_id = self.frame_id
+        position.constraint_region = BoundingVolume(
+            primitives=[SolidPrimitive(type=SolidPrimitive.SPHERE, dimensions=[0.001])],
+            primitive_poses=[Pose(position=pose.position, orientation=Quaternion(w=1.0))])
+        orientation = OrientationConstraint(
+            link_name=TCP_LINK, orientation=pose.orientation, weight=1.0,
+            absolute_x_axis_tolerance=0.01, absolute_y_axis_tolerance=0.01,
+            absolute_z_axis_tolerance=0.01)
+        orientation.header.frame_id = self.frame_id
+
+        goal = MoveGroup.Goal()
+        req = goal.request
+        req.group_name = GROUP
+        req.pipeline_id = PTP_PIPELINE
+        req.planner_id = PTP_PLANNER
+        req.start_state.is_diff = True
+        req.num_planning_attempts = 1
+        req.allowed_planning_time = 5.0
+        req.max_velocity_scaling_factor = self.vel_scaling
+        req.max_acceleration_scaling_factor = self.acc_scaling
+        req.goal_constraints = [Constraints(position_constraints=[position],
+                                            orientation_constraints=[orientation])]
+        goal.planning_options.plan_only = False  # a move_group végre is hajtja
+
+        result = self._run_action(self.move_cli, goal)
+        if result.error_code.val != MoveItErrorCodes.SUCCESS:
+            raise RuntimeError(
+                f'PTP mozgás sikertelen ({pose.position.x:.3f}, {pose.position.y:.3f}, '
+                f'{pose.position.z:.3f}), hibakód: {result.error_code.val}. '
+                'Elérhető a pont ezzel az orientációval?')
 
     def move_to_ready(self):
-        goal = FollowJointTrajectory.Goal()
-        goal.trajectory.joint_names = JOINT_NAMES
-        sec = int(self.ready_duration)
-        goal.trajectory.points = [JointTrajectoryPoint(
-            positions=self.ready_joints,
-            time_from_start=Duration(sec=sec, nanosec=int((self.ready_duration - sec) * 1e9)))]
-        result = self._run_action(self.joint_cli, goal)
-        if result.error_code != FollowJointTrajectory.Result.SUCCESSFUL:
-            raise RuntimeError(f'Kezdőpózba állás sikertelen: {result.error_string}')
+        self.move_to_pose(self._pose(self.ready_point))
 
     def plan_stroke(self, stroke):
         row, c0, c1 = stroke
@@ -204,12 +242,11 @@ def main():
         node.run()
         # Tovább fut, hogy a (latched) markerek később induló RViz-ben is látszódjanak.
         rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass  # Ctrl+C / launch leállítás
     except RuntimeError as e:
         node.get_logger().error(str(e))
     finally:
-        node.destroy_node()
         rclpy.try_shutdown()
 
 

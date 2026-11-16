@@ -9,6 +9,14 @@ from ragasztas.glue_path import (cell_center, find_strokes, grid_to_pixels,
 CONFIG = os.path.join(os.path.dirname(__file__), '..', 'config', 'glue_map.yaml')
 
 
+# A feladatlap (PDF) ábrája, a konfigtól függetlenül.
+ASSIGNMENT_MAP = [
+    '1110011100', '0011100000', '0000000000', '0000000011', '0011100000',
+    '0000000000', '0000111111', '0000000000', '1110000000', '0000000000',
+    '0011100000', '0000000000', '0000011111',
+]
+
+
 def load_grid_rows():
     with open(CONFIG, encoding='utf-8') as f:
         return yaml.safe_load(f)['/**']['ros__parameters']['grid']
@@ -21,7 +29,7 @@ def test_config_grid_is_13x10():
 
 
 def test_strokes_of_assignment_map():
-    strokes = find_strokes(parse_grid(load_grid_rows()))
+    strokes = find_strokes(parse_grid(ASSIGNMENT_MAP))
     assert strokes == [
         (0, 0, 2), (0, 5, 7), (1, 2, 4), (3, 8, 9), (4, 2, 4),
         (6, 4, 9), (8, 0, 2), (10, 2, 4), (12, 5, 9),
@@ -51,3 +59,11 @@ def test_cell_center():
     assert (x, y, z) == pytest.approx((0.81, 0.09, 0.005))
     x, y, _ = cell_center(12, 9, 0.82, 0.10, 0.0, 0.02)
     assert (x, y) == pytest.approx((0.57, -0.09))
+
+
+def test_tool_down_quaternion():
+    from ragasztas.glue_path import rpy_deg_to_quaternion
+    q = rpy_deg_to_quaternion(0.0, 180.0, 0.0)
+    assert q == pytest.approx((0.0, 1.0, 0.0, 0.0), abs=1e-12)
+    assert rpy_deg_to_quaternion(0.0, 0.0, 90.0) == pytest.approx(
+        (0.0, 0.0, 2 ** -0.5, 2 ** -0.5))

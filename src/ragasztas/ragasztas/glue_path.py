@@ -1,5 +1,7 @@
 """ROS-független segédfüggvények: rács <-> kép, szakaszkeresés, koordináták."""
 
+import math
+
 BLACK = 0
 WHITE = 255
 
@@ -54,3 +56,14 @@ def cell_center(row, col, sheet_x, sheet_y, z, cell_size):
     return (sheet_x - (row + 0.5) * cell_size,
             sheet_y - (col + 0.5) * cell_size,
             z)
+
+
+def rpy_deg_to_quaternion(roll, pitch, yaw):
+    """RPY szögek (fok, ROS konvenció: R = Rz(yaw)·Ry(pitch)·Rx(roll)) -> (x, y, z, w)."""
+    r, p, y = (math.radians(a) / 2 for a in (roll, pitch, yaw))
+    cr, sr, cp, sp, cy, sy = (math.cos(r), math.sin(r), math.cos(p),
+                              math.sin(p), math.cos(y), math.sin(y))
+    return (sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+            cr * cp * cy + sr * sp * sy)

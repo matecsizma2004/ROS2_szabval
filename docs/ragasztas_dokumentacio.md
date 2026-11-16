@@ -48,10 +48,9 @@ config/glue_map.yaml
 │  (mock szenzor)  │  sensor_msgs/Image    │ (mozgásvezérlő)  │
 └──────────────────┘  mono8, 10x13         └──────────────────┘
                                              │   │        │
-                  /compute_cartesian_path ◄──┘   │        │ /glue_markers
-                  /execute_trajectory     ◄──────┘        ▼ (MarkerArray)
-                  /joint_trajectory_controller/        RViz
-                    follow_joint_trajectory
+                  /move_action (PTP)      ◄──┤   │        │ /glue_markers
+                  /compute_cartesian_path ◄──┘   │        ▼ (MarkerArray)
+                  /execute_trajectory     ◄──────┘       RViz
                              │
               ┌──────────────┴───────────────────────────┐
               │ KUKA launch (kuka_kr_moveit_config):     │
@@ -69,7 +68,7 @@ config/glue_map.yaml
 | `/glue_markers` | `visualization_msgs/MarkerArray` | lap, fekete cellák, tervezett (kék) és kész (zöld) csíkok |
 | `/compute_cartesian_path` | `moveit_msgs/srv/GetCartesianPath` | egyenes vonalú pálya tervezése a `tool0` linkre |
 | `/execute_trajectory` | `moveit_msgs/action/ExecuteTrajectory` | a tervezett pálya végrehajtása |
-| `.../follow_joint_trajectory` | `control_msgs/action/FollowJointTrajectory` | kezdőpózba állás csuklótérben |
+| `/move_action` | `moveit_msgs/action/MoveGroup` | kezdőpózba állás: Descartes-célpóz, Pilz PTP tervező |
 
 A csomag felépítése (`src/ragasztas/`):
 
@@ -145,10 +144,15 @@ Közelebbi lapnál (x ≈ 0.45 m) az A5 előjelet váltana a pálya közben.
 
 ### 5.3 Mozgássorrend
 
-1. **Kezdőpóz:** a mock hardver a KUKA „home” pózában indul ([0, −90°, 90°, 0, 0, 0]). Ebben a pózban A5 = 0, ami szinguláris. Ezért a robot először csuklótérben, a controlleren keresztül átáll a `ready_joints` pózba ([0, −0.30, 1.32, 0, 0.55, 0] rad). Itt a `tool0` lefelé néz, kb. 10 cm-rel a lap közepe felett.
+1. **Kezdőpóz:** a mock hardver a KUKA „home” pózában indul ([0, −90°, 90°, 0, 0, 0]). Itt A5 = 0, ami szinguláris, és a szerszám vízszintesen előre néz. A kezdőpózt a konfigban Descartes-koordinátákban adjuk meg, csuklószögek nélkül:
+   ```yaml
+   tool_rpy_deg: [0.0, 180.0, 0.0]    # tool0 orientációja (RPY, fok) -> z tengely lefelé
+   ready_position: [0.70, 0.0, 0.10]  # tool0 helye a world frame-ben (m)
+   ```
+   A `glue_motion` ebből `MoveGroup` action célt készít: egy pozíciós és egy orientációs kényszert a `tool0` linkre. A `/move_action`-t a **Pilz PTP** tervezővel hívja. A MoveIt (KDL) a pillanatnyi csuklóállásból indulva számolja az inverz kinematikát, ezért mindig a legközelebbi megoldást adja. A pályát csuklótérben, trapéz sebességprofillal tervezi és hajtja végre (a KUKA PTP mozgásnak felel meg). Saját IK-számításra így nincs szükség. Szimulációban mért eredmény: a `tool0` a (0.700, 0.000, 0.100) pontban, (0, 1, 0, 0) kvaternióval áll meg.
 2. **Csíkonként egy Cartesian kérés** a `/compute_cartesian_path` szolgáltatásnak, a következő waypointokkal:
    `kezdőcella felett (lift_height = 5 cm)` → `kezdőcella` → `közbenső cellák középpontjai` → `zárócella` → `zárócella felett`.
-   - A szerszám orientációja végig állandó: a `tool0` z tengelye függőlegesen lefelé mutat, ami a (0, 1, 0, 0) kvaternió.
+   - A szerszám orientációja végig állandó, és ugyanaz a `tool_rpy_deg`, mint a kezdőpózban. Az RPY [0, 180, 0]° kvaternióként (0, 1, 0, 0): a `tool0` z tengelye függőlegesen lefelé mutat.
    - Két csík között a robot az előző csík feletti pontból egyenes vonalban, biztonsági magasságban halad a következő feletti pontba. Ez a feladat szerinti **emelés**.
    - Interpolációs lépésköz `max_step = 5 mm`. Az időparaméterezést a MoveIt végzi `velocity_scaling = acceleration_scaling = 0.2` mellett.
    - Ha a `fraction < 1.0` (a pálya nem teljesen tervezhető), a node hibával leáll.

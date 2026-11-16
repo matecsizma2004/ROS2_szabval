@@ -1,6 +1,7 @@
 """Mock szenzor: a konfigurációs rácsot sensor_msgs/Image-ként publikálja."""
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
@@ -42,13 +43,19 @@ class GlueMapSensor(Node):
 
 def main():
     rclpy.init()
-    node = GlueMapSensor()
+    try:
+        node = GlueMapSensor()
+    except ValueError as e:
+        rclpy.logging.get_logger('glue_map_sensor').fatal(
+            f'Hibás ragasztási térkép a konfigban: {e} '
+            '(minden sor azonos hosszú legyen, és csak 0/1 karaktert tartalmazzon).')
+        rclpy.try_shutdown()
+        raise SystemExit(1)
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass  # Ctrl+C / launch leállítás
     finally:
-        node.destroy_node()
         rclpy.try_shutdown()
 
 

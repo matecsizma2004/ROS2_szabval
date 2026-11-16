@@ -8,3 +8,6 @@ log/
 
 # Külső függőség (git clone, ld. docs)
 src/kuka_robot_descriptions/
+
+# Python
+__pycache__/
